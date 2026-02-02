@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT=""
+WORKSPACE=""
+SCHEME=""
+BUNDLE_ID=""
+FLOW=""
+CHANGE=""
+DEVICE=""
+UDID=""
+ONLY_TESTING=""
+APP_ROOT=""
+UI_TESTS_DIR=""
+SKIP_STATIC_PREFLIGHT="false"
+SKIP_RUNTIME_PREFLIGHT="false"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      PROJECT="$2"; shift 2;;
+    --workspace)
+      WORKSPACE="$2"; shift 2;;
+    --scheme)
+      SCHEME="$2"; shift 2;;
+    --bundle-id)
+      BUNDLE_ID="$2"; shift 2;;
+    --flow)
+      FLOW="$2"; shift 2;;
+    --change)
+      CHANGE="$2"; shift 2;;
+    --device)
+      DEVICE="$2"; shift 2;;
+    --udid)
+      UDID="$2"; shift 2;;
+    --only-testing)
+      ONLY_TESTING="$2"; shift 2;;
+    --app-root)
+      APP_ROOT="$2"; shift 2;;
+    --ui-tests-dir)
+      UI_TESTS_DIR="$2"; shift 2;;
+    --skip-static-preflight)
+      SKIP_STATIC_PREFLIGHT="true"; shift 1;;
+    --skip-runtime-preflight)
+      SKIP_RUNTIME_PREFLIGHT="true"; shift 1;;
+    *)
+      echo "Unknown arg: $1" >&2; exit 1;;
+  esac
+done
+
+prompt_if_empty() {
+  local var_name="$1"
+  local prompt="$2"
+  local value
+  value="${!var_name}"
+  if [[ -z "$value" ]]; then
+    read -r -p "$prompt" value
+    printf -v "$var_name" "%s" "$value"
+  fi
+}
+
+if [[ -z "$PROJECT" && -z "$WORKSPACE" ]]; then
+  read -r -p "Project path (.xcodeproj) or workspace (.xcworkspace): " input
+  if [[ "$input" == *.xcworkspace ]]; then
+    WORKSPACE="$input"
+  else
+    PROJECT="$input"
+  fi
+fi
+
+prompt_if_empty SCHEME "Scheme name: "
+
+if [[ -z "$FLOW" && -z "$ONLY_TESTING" ]]; then
+  read -r -p "Test id for -only-testing (e.g., Target/Class/testMethod): " ONLY_TESTING
+fi
+
+if [[ -z "$CHANGE" ]]; then
+  read -r -p "Intended change (short description): " CHANGE
+fi
+
+# Resolve UDID if not provided.
+PYTHON_BIN=$(command -v python3 || command -v python || true)
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "python3 not found; required to select simulator device" >&2
+  exit 1
+fi
+
+if [[ -z "$UDID" ]]; then
+  if [[ -z "$DEVICE" ]]; then
+    DEVICE=$("$PYTHON_BIN" - <<'PY'
+import json, subprocess, re
+
+data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+
+def runtime_key(name):
+    nums = list(map(int, re.findall(r"\d+", name)))
+    return nums
+
+runtimes = sorted(data["devices"].keys(), key=runtime_key)
+
+chosen = None
+for runtime in reversed(runtimes):
+    devices = data["devices"][runtime]
+    pro = [d for d in devices if d.get("isAvailable") and "iPhone" in d["name"] and "Pro" in d["name"]]
+    if pro:
+        chosen = pro[0]["name"]
+        break
+    iphones = [d for d in devices if d.get("isAvailable") and "iPhone" in d["name"]]
+    if iphones and not chosen:
+        chosen = iphones[0]["name"]
+
+if not chosen:
+    raise SystemExit("No available iPhone simulator found")
+
+print(chosen)
+PY
+)
+    DEVICE="$(echo "$DEVICE" | tr -d '\r' | xargs)"
+  fi
+
+  UDID=$(DEVICE_NAME="$DEVICE" "$PYTHON_BIN" - <<'PY'
+import json, os, subprocess
+name = os.environ["DEVICE_NAME"]
+
+data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+for runtime, devices in data["devices"].items():
+    for d in devices:
+        if d.get("isAvailable") and d.get("name") == name:
+            print(d["udid"])
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+) || { echo "Could not find simulator device: $DEVICE" >&2; exit 1; }
+fi
+
+TS=$(date +"%Y-%m-%d_%H%M%S")
+RUN_DIR="runs/${TS}"
+mkdir -p "${RUN_DIR}/keyframes"
+
+VIDEO="${RUN_DIR}/video.mp4"
+TELEMETRY="${RUN_DIR}/telemetry.json"
+LOG="${RUN_DIR}/run.log"
+REQ_IDS_FILE="${RUN_DIR}/required_ids.txt"
+TELEMETRY_DIR="${RUN_DIR}/telemetry"
+
+PROJECT_DIR=""
+if [[ -n "$PROJECT" ]]; then
+  PROJECT_DIR="$(dirname "$PROJECT")"
+else
+  PROJECT_DIR="$(dirname "$WORKSPACE")"
+fi
+
+if [[ -z "$APP_ROOT" ]]; then
+  if [[ -d "${PROJECT_DIR}/${SCHEME}" ]]; then
+    APP_ROOT="${PROJECT_DIR}/${SCHEME}"
+  else
+    APP_ROOT="${PROJECT_DIR}"
+  fi
+fi
+
+if [[ -z "$UI_TESTS_DIR" ]]; then
+  UI_TESTS_DIR="${PROJECT_DIR}/${SCHEME}UITests"
+fi
+
+# Boot simulator
+xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
+xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
+
+# Static preflight: ensure identifiers used in UI tests exist in app code.
+if [[ "$SKIP_STATIC_PREFLIGHT" != "true" ]]; then
+  ruby "$(dirname "$0")/../scripts/static_preflight.rb" \
+    --ui-tests-dir "$UI_TESTS_DIR" \
+    --app-root "$APP_ROOT" \
+    --out "$REQ_IDS_FILE"
+fi
+
+# Runtime preflight (optional): only check Home.* identifiers at launch.
+HOME_IDS=""
+if [[ -s "$REQ_IDS_FILE" ]]; then
+  HOME_IDS=$(rg -n "^Home\\." "$REQ_IDS_FILE" | sed 's/^[0-9]*://')
+fi
+
+if [[ "$SKIP_RUNTIME_PREFLIGHT" != "true" && -n "$HOME_IDS" ]]; then
+  HOME_IDS_CSV=$(echo "$HOME_IDS" | paste -sd, -)
+  PRE_XCODE_CMD=(xcodebuild test)
+  if [[ -n "$PROJECT" ]]; then
+    PRE_XCODE_CMD+=( -project "$PROJECT" )
+  else
+    PRE_XCODE_CMD+=( -workspace "$WORKSPACE" )
+  fi
+  PRE_XCODE_CMD+=( -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID" )
+  PRE_XCODE_CMD+=( -only-testing:"${SCHEME}UITests/PreflightTests/testRequiredAccessibilityIdentifiersExist" )
+  LLM_REQUIRED_IDS="$HOME_IDS_CSV" "${PRE_XCODE_CMD[@]}" >/dev/null
+fi
+
+# Start recording
+xcrun simctl io "$UDID" recordVideo "$VIDEO" --codec=h264 --force >/dev/null 2>&1 &
+REC_PID=$!
+
+set +e
+XCODE_CMD=(xcodebuild test)
+if [[ -n "$PROJECT" ]]; then
+  XCODE_CMD+=( -project "$PROJECT" )
+else
+  XCODE_CMD+=( -workspace "$WORKSPACE" )
+fi
+XCODE_CMD+=( -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID" )
+
+TEST_ID="${ONLY_TESTING:-$FLOW}"
+if [[ -n "$TEST_ID" ]]; then
+  XCODE_CMD+=( -only-testing:"$TEST_ID" )
+fi
+
+LLM_TELEMETRY_PATH="$TELEMETRY" LLM_TELEMETRY_DIR="/tmp/llm_ui_telemetry_${TS}" "${XCODE_CMD[@]}" | tee "$LOG"
+XCODE_STATUS=${PIPESTATUS[0]}
+set -e
+
+# Stop recording
+kill -INT "$REC_PID" >/dev/null 2>&1 || true
+wait "$REC_PID" >/dev/null 2>&1 || true
+sleep 1
+
+# Extract keyframes (1 fps)
+if [[ -s "$VIDEO" ]]; then
+  ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf fps=1 "${RUN_DIR}/keyframes/frame_%04d.png" || true
+  # Extra density for the tail so late app launch is captured.
+  ffmpeg -hide_banner -loglevel error -sseof -5 -i "$VIDEO" -vf fps=3 "${RUN_DIR}/keyframes/tail_%04d.png" || true
+fi
+
+if [[ -s "/tmp/llm_ui_telemetry.json" ]]; then
+  cp "/tmp/llm_ui_telemetry.json" "$TELEMETRY"
+fi
+
+if [[ -d "/tmp/llm_ui_telemetry_${TS}" ]]; then
+  mkdir -p "$TELEMETRY_DIR"
+  cp -R "/tmp/llm_ui_telemetry_${TS}/." "$TELEMETRY_DIR/" 2>/dev/null || true
+fi
+
+if [[ $XCODE_STATUS -ne 0 ]]; then
+  echo "xcodebuild failed; see ${LOG}" >&2
+fi
+
+echo "{"
+echo "  \"run_dir\": \"${RUN_DIR}\","
+echo "  \"video\": \"${VIDEO}\","
+echo "  \"keyframes\": \"${RUN_DIR}/keyframes/\","
+echo "  \"telemetry\": \"${TELEMETRY}\","
+echo "  \"log\": \"${LOG}\""
+echo "}"
+
+exit $XCODE_STATUS

@@ -1,0 +1,12 @@
+{
+  "name": "verify_flow",
+  "description": "Run an iOS simulator flow, record video, capture UI telemetry, and return artifact paths.",
+  "usage": "./tools/verify_flow --project /path/App.xcodeproj --scheme AppScheme --only-testing Target/Class/testMethod --change \"<Intended change>\" [--device \"iPhone 15 Pro\"] [--udid <SIM_UDID>]",
+  "output": {
+    "run_dir": "runs/YYYY-MM-DD_HHMMSS",
+    "video": "runs/.../video.mp4",
+    "keyframes": "runs/.../keyframes/",
+    "telemetry": "runs/.../telemetry.json",
+    "log": "runs/.../run.log"
+  }
+}
