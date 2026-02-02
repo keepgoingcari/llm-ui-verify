@@ -1,16 +1,16 @@
 # llm-ui-verify (Claude Skill)
 
-This repo provides a Claude Code skill + CLI that lets Claude run iOS UI flows, capture simulator video + telemetry, and optionally request an LLM verdict. It is designed for Claude Code environments.
+This repo provides a Claude Code skill + CLI that lets Claude run **iOS** UI flows (XCTest UI), capture **iOS Simulator** video + telemetry, and optionally request an LLM verdict. It is **iOS-specific** and designed for Claude Code environments.
 
 ## What this is
 - A **Claude Skill** (packaged `.skill`) that tells Claude how to run the tool.
 - A **local CLI** that executes XCTest UI flows and collects artifacts.
 
-## Requirements
-- macOS with Xcode and iOS Simulator
+## Requirements (iOS)
+- macOS with Xcode and **iOS Simulator**
 - `python3` on PATH
 - `ffmpeg` on PATH (for keyframes)
-- An XCTest UI test that drives your flow
+- An **XCTest UI test** that drives your flow (iOS only)
 - Accessibility identifiers for elements your UI test taps/reads
 
 ## Install the Claude Skill
