@@ -1,47 +1,57 @@
-# llm-ui-verify
+# llm-ui-verify (Claude Skill)
 
-Minimal orchestration layer that gives an LLM “eyes” for iOS UI verification.
+This repo provides a Claude Code skill + CLI that lets Claude run iOS UI flows, capture simulator video + telemetry, and optionally request an LLM verdict. It is designed for Claude Code environments.
 
-## What it does (MVP)
-- Runs a scripted UI flow
-- Records simulator video
-- Captures a UI telemetry snapshot (SwiftUI-friendly: accessibility tree or custom debug JSON)
-- Packages artifacts for an LLM to verify and suggest fixes
-- Optional: sends artifacts to an LLM and writes a verdict
+## What this is
+- A **Claude Skill** (packaged `.skill`) that tells Claude how to run the tool.
+- A **local CLI** that executes XCTest UI flows and collects artifacts.
 
-## Quick start
-### Requirements
-- macOS with Xcode (latest) and iOS Simulator
+## Requirements
+- macOS with Xcode and iOS Simulator
 - `python3` on PATH
 - `ffmpeg` on PATH (for keyframes)
 - An XCTest UI test that drives your flow
-- Accessibility identifiers for elements used in the flow
+- Accessibility identifiers for elements your UI test taps/reads
 
-### Setup
-1) Add your XCTest UI flow (UI test target).
-2) Add accessibility identifiers for any UI elements the test taps/reads.
-3) Run the CLI:
+## Install the Claude Skill
+1) Grab the packaged skill:
+   - `/Users/cari/.codex/skills/dist/llm-ui-verify-claude.skill`
+2) Install it in your Claude Code environment (use your standard skill install flow).
+3) Ensure this repo is available locally on the machine running Claude Code.
 
+### Install this repo (CLI)
+```bash
+git clone https://github.com/keepgoingcari/llm-ui-verify.git
+cd llm-ui-verify
+```
+
+## Usage (Claude Code)
+Ask Claude to run a verification flow, for example:
+- “Run the UI verifier for the host flow.”
+- “Verify this UI change and give me a verdict.”
+
+Claude will use the CLI in this repo and return the run artifacts + verdict.
+
+## Usage (CLI)
+Run a flow only:
 ```bash
 ./tools/verify_flow --project /path/App.xcodeproj --scheme AppScheme \
-  --only-testing Target/Class/testMethod --change "Updated empty state"
+  --only-testing Target/Class/testMethod --change "Short change description"
 ```
 
-This writes artifacts under `runs/`.
-
-### LLM verification
-To run the flow and request an LLM verdict:
+Run flow + LLM verdict:
 ```bash
 OPENAI_API_KEY=... ./tools/verify_and_review --project /path/App.xcodeproj --scheme AppScheme \
-  --only-testing Target/Class/testMethod --change "Updated empty state"
+  --only-testing Target/Class/testMethod --change "Short change description"
 ```
 
-### What you get
+## What you get
 - `runs/<timestamp>/video.mp4`
-- `runs/<timestamp>/keyframes/` (including dense tail frames)
+- `runs/<timestamp>/keyframes/` (dense tail frames included)
 - `runs/<timestamp>/telemetry/` (per-step snapshots)
 - `runs/<timestamp>/telemetry.json` (last snapshot)
 - `runs/<timestamp>/verdict.json` (LLM output)
 
-## Status
-This repo is a scaffold for the MVP. The CLI expects runtime inputs, runs `xcodebuild test`, and includes a static + runtime preflight for accessibility identifiers.
+## Notes
+- This is intended as a verification “assistant,” not a deterministic CI gate.
+- If the app launches late, tail frames ensure the UI is still captured.
